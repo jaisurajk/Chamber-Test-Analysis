@@ -13,7 +13,7 @@ except ImportError:
     STREAMLIT_AVAILABLE = False
 
 # Constants for Humidity Processing
-TEMP_LABELS_FULL = [-60, -55, -50, -45, -40, -35, -30, -25, -20, -15, -10, -5, 0, 1, 2, 3, 4, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 96, 97, 98, 99, 100]
+TEMP_LABELS_FULL = list(range(-100, 181))
 HUM_LABELS = [0, 1, 2, 3, 4, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 96, 97, 98, 99, 100]
 IMG_HUM_COUNT = 29 
 
@@ -65,6 +65,46 @@ CHAMBER_TYPES = {
     "Chamber 57": "T-Shock",
     "Chamber 60": "Temp",
     "QUV": "UV"
+}
+
+CHAMBER_RANGES = {
+    "Chamber 2": (-25, 93),
+    "Chamber 4": (-100, 170),
+    "Chamber 6": (-60, 100),
+    "Chamber 7": (-25, 100),
+    "Chamber 8": (-60, 100),
+    "Chamber 9": (-60, 100),
+    "Chamber 10": (-30, 100),
+    "Chamber 12": (-60, 100),
+    "Chamber 13": (-60, 100),
+    "Chamber 14": (-60, 100),
+    "Chamber 15": (-60, 150),
+    "Chamber 17": (-60, 100),
+    "Chamber 18": (-60, 100),
+    "Chamber 19": (-35, 100),
+    "Chamber 21": (-60, 150),
+    "Chamber 22": (-25, 100),
+    "Chamber 23": (-20, 100),
+    "Chamber 25": (35, 35),
+    "Chamber 28": (35, 35),
+    "Chamber 31": (-100, 170),
+    "Chamber 32": (-60, 85),
+    "Chamber 33": (-60, 180),
+    "Chamber 34": (-20, 150),
+    "Chamber 37": (-60, 100),
+    "Chamber 38": (-60, 100),
+    "Chamber 40": (-60, 175),
+    "Chamber 42": (-60, 180),
+    "Chamber 43": (-60, 85),
+    "Chamber 44": (-60, 100),
+    "Chamber 45": (-60, 100),
+    "Chamber 46": (-35, 100),
+    "Chamber 50": (20, 340),
+    "Chamber 51": (-70, 200),
+    "Chamber 56": (-70, 175),
+    "Chamber 57": (-70, 175),
+    "Chamber 60": (-60, 150),
+    "QUV": (30, 60)
 }
 
 HSV_THRESHOLDS = {
@@ -346,29 +386,37 @@ def main():
                     if higher_temps:
                         ramp_rate = chamber_rates[min(higher_temps)]
 
+            # Check if Temp within Chamber's Range first
+            ch_range = CHAMBER_RANGES.get(chamber)
+            if ch_range and not (ch_range[0] <= temp <= ch_range[1]):
+                continue
+
             for hum in HUM_LABELS:
+                # Within range - determine status
                 if temp < 10 or temp > 90:
                     # Specific requirement: Chamber 10 at 4°C must be DOABLE
                     if chamber == "Chamber 10" and temp == 4:
                         status = "DOABLE"
                     else:
-                        # Find status from hum_df if available for ANY humidity at this temp
+                        # For out-of-humidity-range temps, check if any image data exists for this temp
                         status_data = hum_df[(hum_df["Chamber"] == chamber) & (hum_df["Temperature"] == temp)]
                         if not status_data.empty:
-                            # Majority vote for the status in this temp column
                             status = status_data["Status"].mode()[0]
                         else:
-                            # Default to DOABLE if no image data exists for this extreme temp
+                            # Default to DOABLE if within range and no image data (common for Temp-only)
                             status = "DOABLE"
                 else:
-                    # Find status from hum_df if available
+                    # Normal operating range [10, 90] - rely on image data if possible
                     status_row = hum_df[(hum_df["Chamber"] == chamber) & (hum_df["Temperature"] == temp) & (hum_df["Humidity"] == hum)]
                     
                     if not status_row.empty:
                         status = status_row.iloc[0]["Status"]
                     else:
-                        status = "NOT DOABLE"
-
+                        # If no image data but it's a Temp-only chamber, it's DOABLE
+                        if "Hum" not in CHAMBER_TYPES.get(chamber, ""):
+                            status = "DOABLE"
+                        else:
+                            status = "NOT DOABLE"
 
                 all_rows.append({
                     "Chamber": chamber,
