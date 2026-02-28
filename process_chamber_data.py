@@ -115,14 +115,32 @@ HSV_THRESHOLDS = {
 }
 
 def format_ramp_rate(val):
-    if pd.isna(val):
-        return val
-    val_str = str(val)
-    def replacer(match):
-        num = float(match.group(0))
-        return "{:.1f}".format(num)
-    new_val = re.sub(r'\d+(\.\d+)?', replacer, val_str)
-    return new_val
+    if pd.isna(val) or val == "N/A":
+        return "N/A"
+    
+    val_str = str(val).strip()
+    
+    # Extract all numbers from the string
+    nums = re.findall(r'\d+\.?\d*', val_str)
+    
+    if not nums:
+        return "N/A"
+    
+    # Check if the rate contains a range (e.g., "5.0-6.0")
+    if '-' in val_str and len(nums) == 2:
+        try:
+            val1 = float(nums[0])
+            val2 = float(nums[1])
+            return f"{val1:.1f}-{val2:.1f}C/Min"
+        except ValueError:
+            pass
+            
+    # Default: format the first valid float found
+    try:
+        num = float(nums[0])
+        return f"{num:.1f}C/Min"
+    except ValueError:
+        return "N/A"
 
 def calculate_gap(size_str):
     """
@@ -168,7 +186,7 @@ def load_ramp_mapping(csv_path="ramp_rates.csv"):
 
             # Handle temperature parsing (extract numbers or special labels)
             if "UP TO" in temp_raw.upper():
-                mapping[chamber]["rates"][100] = rate
+                continue # Ignore max temp; this is not a ramp rate
             else:
                 match = re.search(r'(-?\d+)', temp_raw)
                 if match:
