@@ -79,7 +79,7 @@ CHAMBER_RANGES = {
     "Chamber 13": (-60, 100),
     "Chamber 14": (-60, 100),
     "Chamber 15": (-60, 150),
-    "Chamber 17": (-60, 100),
+    "Chamber 17": (-50, 100),
     "Chamber 18": (-60, 100),
     "Chamber 19": (-35, 100),
     "Chamber 21": (-60, 150),
@@ -107,6 +107,17 @@ CHAMBER_RANGES = {
     "QUV": (30, 60)
 }
 
+CHAMBER_POWER = {
+    "Chamber 18": "30 KW",
+    "Chamber 21": "25 KW",
+    "Chamber 6": "15 KW",
+    "Chamber 43": "15 KW",
+    "Chamber 13": "5 KW",
+    "Chamber 44": "5 KW",
+    "Chamber 12": "3 KW",
+    "Chamber 23": "9 KW"
+}
+
 HSV_THRESHOLDS = {
     "DOABLE": ([35, 50, 50], [85, 255, 255]),      # Green
     "VERIFY": ([15, 50, 50], [35, 255, 255]),      # Yellow
@@ -120,6 +131,13 @@ def format_ramp_rate(val):
     
     val_str = str(val).strip()
     
+    # Check for Ft/Min (Altitude Change)
+    if "FT/MIN" in val_str.upper():
+        nums = re.findall(r'-?\d+\.?\d*', val_str)
+        if nums:
+            return f"{nums[0]}Ft/Min"
+        return "N/A"
+
     # Extract all numbers from the string
     nums = re.findall(r'\d+\.?\d*', val_str)
     
@@ -184,14 +202,13 @@ def load_ramp_mapping(csv_path="ramp_rates.csv"):
             if chamber not in mapping:
                 mapping[chamber] = {"rates": {}, "size": size}
 
-            # Handle temperature parsing (extract numbers or special labels)
+            # Handle temperature and altitude parsing
             if "UP TO" in temp_raw.upper():
                 continue # Ignore max temp; this is not a ramp rate
-            else:
-                match = re.search(r'(-?\d+)', temp_raw)
-                if match:
-                    temp_val = int(match.group(1))
-                    mapping[chamber]["rates"][temp_val] = rate
+            
+            # Special handling for altitude markers or conditions
+            # e.g., "-60C (SL)", "Climb 0-28k", etc.
+            mapping[chamber]["rates"][temp_raw] = rate
         print(f"Successfully loaded ramp mapping for {len(mapping)} chambers.")
         return mapping
     except Exception as e:
@@ -390,67 +407,123 @@ def main():
         size = chamber_data.get("size", "Unknown")
         gap = calculate_gap(size)
 
-        for temp in TEMP_LABELS_FULL:
-            # Determine ramp rate
-            ramp_rate = "N/A"
-            if temp in chamber_rates:
-                ramp_rate = chamber_rates[temp]
-            else:
-                lower_temps = [t for t in chamber_rates.keys() if t <= temp]
-                if lower_temps:
-                    ramp_rate = chamber_rates[max(lower_temps)]
-                else:
-                    higher_temps = [t for t in chamber_rates.keys() if t >= temp]
-                    if higher_temps:
-                        ramp_rate = chamber_rates[min(higher_temps)]
+        # Define Altitude Points for Temp/Alt
+        alt_points = [0]
+        if CHAMBER_TYPES.get(chamber) == "Temp/Alt":
+            if chamber == "Chamber 17":
+                alt_points = [0, 28000, 70000]
+            elif chamber == "Chamber 19":
+                alt_points = [-1500, 70000]
 
-            # Check if Temp within Chamber's Range first
-            ch_range = CHAMBER_RANGES.get(chamber)
-            if ch_range and not (ch_range[0] <= temp <= ch_range[1]):
-                continue
+        for alt in alt_points:
+            # Determine Altitude Change Rate
+            alt_change = "N/A"
+            if CHAMBER_TYPES.get(chamber) == "Temp/Alt":
+                if chamber == "Chamber 17":
+                    if alt == 0: alt_change = "7000Ft/Min" # Target for 0-28k
+                    elif alt == 28000: alt_change = "3500Ft/Min" # Target for 28k-70k
+                    elif alt == 70000: alt_change = "-12000Ft/Min" # Descent
+                elif chamber == "Chamber 19":
+                    if alt == -1500: alt_change = "4000Ft/Min" # Target for -1.5k-70k
+                    elif alt == 70000: alt_change = "-3500Ft/Min" # Descent (back to 0)
 
-            for hum in HUM_LABELS:
-                # Within range - determine status
-                if temp < 10 or temp > 90:
-                    # Specific requirement: Chamber 10 at 4°C must be DOABLE
-                    if chamber == "Chamber 10" and temp == 4:
-                        status = "DOABLE"
-                    else:
-                        # For out-of-humidity-range temps, check if any image data exists for this temp
-                        status_data = hum_df[(hum_df["Chamber"] == chamber) & (hum_df["Temperature"] == temp)]
-                        if not status_data.empty:
-                            status = status_data["Status"].mode()[0]
-                        else:
-                            # Default to DOABLE if within range and no image data (common for Temp-only)
-                            status = "DOABLE"
+            for temp in TEMP_LABELS_FULL:
+                # Determine ramp rate
+                ramp_rate = "N/A"
+                
+                # Check for altitude-specific temp rates first
+                condition = "SL" if alt == 0 else "70k"
+                spec_key = f"{temp}C ({condition})"
+                
+                if spec_key in chamber_rates:
+                    ramp_rate = chamber_rates[spec_key]
                 else:
-                    # Normal operating range [10, 90] - rely on image data if possible
-                    status_row = hum_df[(hum_df["Chamber"] == chamber) & (hum_df["Temperature"] == temp) & (hum_df["Humidity"] == hum)]
+                    # Fallback to nearest neighbor within the same condition
+                    cond_rates = {k: v for k, v in chamber_rates.items() if f"({condition})" in k}
+                    if cond_rates:
+                        temps_only = {}
+                        for k, v in cond_rates.items():
+                            m = re.search(r'(-?\d+)', k)
+                            if m: temps_only[int(m.group(1))] = v
+                        
+                        if temps_only:
+                            lower = [t for t in temps_only.keys() if t <= temp]
+                            if lower: ramp_rate = temps_only[max(lower)]
+                            else:
+                                higher = [t for t in temps_only.keys() if t >= temp]
+                                if higher: ramp_rate = temps_only[min(higher)]
                     
-                    if not status_row.empty:
-                        status = status_row.iloc[0]["Status"]
-                    else:
-                        # If no image data but it's a Temp-only chamber, it's DOABLE
-                        if "Hum" not in CHAMBER_TYPES.get(chamber, ""):
+                    # Absolute fallback to generic rates if no condition-specific match
+                    if ramp_rate == "N/A":
+                        if temp in chamber_rates:
+                            ramp_rate = chamber_rates[temp]
+                        else:
+                            # Original robust fallback
+                            m_rates = {}
+                            for k, v in chamber_rates.items():
+                                m = re.search(r'(-?\d+)', k)
+                                if m and '(' not in k: m_rates[int(m.group(1))] = v
+                            
+                            if m_rates:
+                                lower = [t for t in m_rates.keys() if t <= temp]
+                                if lower: ramp_rate = m_rates[max(lower)]
+                                else:
+                                    higher = [t for t in m_rates.keys() if t >= temp]
+                                    if higher: ramp_rate = m_rates[min(higher)]
+
+                # Check if Temp within Chamber's Range
+                ch_range = CHAMBER_RANGES.get(chamber)
+                if ch_range and not (ch_range[0] <= temp <= ch_range[1]):
+                    continue
+
+                for hum in HUM_LABELS:
+                    # Within range - determine status
+                    status = "NOT DOABLE" # Default
+                    
+                    if temp < 10 or temp > 90:
+                        if chamber == "Chamber 10" and temp == 4:
                             status = "DOABLE"
                         else:
-                            status = "NOT DOABLE"
+                            status_data = hum_df[(hum_df["Chamber"] == chamber) & (hum_df["Temperature"] == temp)]
+                            if not status_data.empty:
+                                status = status_data["Status"].mode()[0]
+                            else:
+                                # For out-of-humidity-range temps, if it's within CHAMBER_RANGES, it's generally DOABLE
+                                status = "DOABLE"
+                    else:
+                        # Normal operating range [10, 90]
+                        status_row = hum_df[(hum_df["Chamber"] == chamber) & (hum_df["Temperature"] == temp) & (hum_df["Humidity"] == hum)]
+                        
+                        if not status_row.empty:
+                            status = status_row.iloc[0]["Status"]
+                        else:
+                            # CRITICAL: If no image data, check chamber type
+                            ch_type = CHAMBER_TYPES.get(chamber, "")
+                            if "Hum" not in ch_type:
+                                # Temp-only or Temp/Alt chambers are DOABLE across all humidity labels (as placeholders)
+                                status = "DOABLE"
+                            else:
+                                # Temp/Hum chambers WITHOUT image data for this point are NOT DOABLE
+                                status = "NOT DOABLE"
 
-                all_rows.append({
-                    "Chamber": chamber,
-                    "Type": CHAMBER_TYPES.get(chamber, "Unknown"),
-                    "Temperature": temp,
-                    "Humidity": hum,
-                    "Status": status,
-                    "Size": size,
-                    "Gap": gap,
-                    "Ramp_Rate": format_ramp_rate(ramp_rate)
-                })
+                    all_rows.append({
+                        "Chamber": chamber,
+                        "Type": CHAMBER_TYPES.get(chamber, "Unknown"),
+                        "Temperature": temp,
+                        "Humidity": hum,
+                        "Altitude": alt,
+                        "Altitude_Change": alt_change,
+                        "Power": CHAMBER_POWER.get(chamber, "2 KW"),
+                        "Status": status,
+                        "Size": size,
+                        "Gap": gap,
+                        "Ramp_Rate": format_ramp_rate(ramp_rate)
+                    })
 
 
     final_df = pd.DataFrame(all_rows)
     # Ensure reproducibility by sorting
-    final_df = final_df.sort_values(by=["Chamber", "Temperature", "Humidity"])
+    final_df = final_df.sort_values(by=["Chamber", "Altitude", "Temperature", "Humidity"])
     
     output_file = "chamber_complete_data.csv"
     final_df.to_csv(output_file, index=False)
@@ -476,7 +549,7 @@ def run_streamlit_ui():
         st.error(f"Error: Could not find {file_path}. Please run the processing first.")
         return
 
-    df = pd.read_csv(file_path)
+    df = pd.read_csv(file_path, dtype={"Altitude": "int64", "Altitude_Change": "str"})
     df['Status'] = df['Status'].str.strip().str.upper()
     df['Temperature'] = pd.to_numeric(df['Temperature'], errors='coerce')
     df['Humidity'] = pd.to_numeric(df['Humidity'], errors='coerce')
@@ -683,6 +756,37 @@ def run_streamlit_ui():
         with st.expander(f"Results for Set #{res['id']} ({res['filter_desc']})", expanded=False):
             if res['doable_chambers']:
                 st.write(f"**Suitable Chambers:** {', '.join(sorted(list(res['doable_chambers'])))}")
+                # Results Header
+                st.subheader(f"✅ Found {len(res['doable_chambers'])} Potential Chambers")
+                
+                # Filter full data for display
+                display_cols = ["Chamber", "Type", "Temperature", "Humidity", "Altitude", "Altitude_Change", "Power", "Status", "Size", "Ramp_Rate"]
+                
+                # Use query_df to get only matching rows, then collapse to 1 row per chamber
+                results_df = res['query_df'][res['query_df']['Chamber'].isin(res['doable_chambers'])].copy()
+                
+                # Collapsing Logic: aggregate altitude info if it's a Temp/Alt search result
+                has_alt = any(results_df["Type"] == "Temp/Alt")
+                
+                if has_alt:
+                    # Grouping columns - everything except the values we want to list
+                    group_cols = [c for c in display_cols if c not in ["Altitude", "Altitude_Change"]]
+                    
+                    # Convert to string for comma-joining
+                    results_df['Altitude'] = results_df['Altitude'].astype(str)
+                    results_df['Altitude_Change'] = results_df['Altitude_Change'].fillna("N/A").astype(str)
+                    
+                    # Aggregate unique values for Altitude and Altitude_Change
+                    results_df = results_df.groupby(group_cols).agg({
+                        'Altitude': lambda x: ", ".join(sorted(set(x), key=lambda val: int(val) if val.replace('-', '').isdigit() else val)),
+                        'Altitude_Change': lambda x: ", ".join(sorted(set(x)))
+                    }).reset_index()
+                else:
+                    # Just drop duplicates for simple chambers
+                    results_df = results_df.drop_duplicates(subset=["Chamber"])
+                    display_cols = [c for c in display_cols if c not in ["Altitude", "Altitude_Change"]]
+
+                st.dataframe(results_df[display_cols].sort_values("Chamber"), width="stretch")
             else:
                 st.warning("No exact matches for this set.")
                 
@@ -721,11 +825,55 @@ def run_streamlit_ui():
 
             # Show Dataframe
             display_df = res['query_df'][['Chamber', 'Size', 'Gap', 'Temperature', 'Humidity', 'Status']].copy()
+            # Collapse to 1 row per chamber for the summary view
+            display_df = display_df.drop_duplicates(subset=["Chamber"])
+            
             def color_status(val):
                 if val == 'DOABLE': return 'background-color: #d4edda; color: #155724'
                 if val == 'VERIFY': return 'background-color: #fff3cd; color: #856404'
                 return 'background-color: #f8d7da; color: #721c24'
             st.dataframe(display_df.style.map(color_status, subset=['Status']), width='stretch')
+
+    # SECTION 3: Detailed Chamber Specifications
+    st.divider()
+    st.header("🔍 Detailed Chamber Specification Viewer")
+    st.markdown("Select a specific chamber to see its full ratings, power performance, and environmental limits.")
+    
+    all_chambers = sorted(df['Chamber'].unique())
+    selected_chamber_detail = st.selectbox("Choose a Chamber for Full Specs", options=all_chambers, key="detail_spec_select")
+    
+    if selected_chamber_detail:
+        chamber_detail_df = df[df['Chamber'] == selected_chamber_detail]
+        c_type = chamber_detail_df['Type'].iloc[0]
+        c_power = chamber_detail_df['Power'].iloc[0]
+        c_size = chamber_detail_df['Size'].iloc[0]
+        
+        # Display key metadata in columns
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Chamber Type", c_type)
+        m2.metric("Power Rating", c_power)
+        m3.metric("Size", c_size)
+        
+        # Specific details for Alt Chambers
+        if c_type == "Temp/Alt":
+            st.info(f"🚀 **Altitude Performance Details for {selected_chamber_detail}**")
+            # Show a summary table of altitude points
+            alt_summary = chamber_detail_df[['Altitude', 'Altitude_Change']].drop_duplicates()
+            st.table(alt_summary)
+            st.write("These rates apply to climb/descent within the respective altitude segments.")
+        
+        # Temperature and Humidity Limits
+        min_temp = chamber_detail_df['Temperature'].min()
+        max_temp = chamber_detail_df['Temperature'].max()
+        st.write(f"**Temperature Limits:** {min_temp}°C to {max_temp}°C")
+        
+        if "Hum" in c_type:
+            min_hum = chamber_detail_df['Humidity'].min()
+            max_hum = chamber_detail_df['Humidity'].max()
+            st.write(f"**Humidity Range:** {min_hum}% to {max_hum}% RH")
+
+        with st.expander(f"Full Data Rows for {selected_chamber_detail}", expanded=False):
+            st.dataframe(chamber_detail_df, width="stretch")
 
 if __name__ == "__main__":
     # Modern Streamlit detection
