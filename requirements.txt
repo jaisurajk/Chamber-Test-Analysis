@@ -1,4 +1,5 @@
 opencv-python-headless
-numpy
-pandas
-streamlit
+numpy==2.0.0
+pandas==2.2.2
+streamlit==1.53.1
+altair==6.0.0
