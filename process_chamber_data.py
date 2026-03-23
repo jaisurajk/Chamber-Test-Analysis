@@ -453,7 +453,7 @@ def main():
 
         for alt in alt_points:
             # Determine Altitude Change Rate
-            alt_change = "N/A"
+            alt_change = ""
             if CHAMBER_TYPES.get(chamber) == "Temp/Alt":
                 if chamber == "Chamber 17":
                     if alt == 0: alt_change = "7000Ft/Min" # Target for 0-28k
@@ -512,7 +512,11 @@ def main():
                 if ch_range and not (ch_range[0] <= temp <= ch_range[1]):
                     continue
 
-                for hum in HUM_LABELS:
+                # Select humidity labels based on chamber type
+                is_hum_chamber = "Hum" in CHAMBER_TYPES.get(chamber, "")
+                current_hum_labels = HUM_LABELS if is_hum_chamber else [None]
+
+                for hum in current_hum_labels:
                     # Within range - determine status
                     status = "NOT DOABLE" # Default
                     
@@ -542,13 +546,18 @@ def main():
                                 # Temp/Hum chambers WITHOUT image data for this point are NOT DOABLE
                                 status = "NOT DOABLE"
 
+                    # Clean up altitude for non-Temp/Alt chambers
+                    is_alt_chamber = CHAMBER_TYPES.get(chamber) == "Temp/Alt"
+                    display_alt = alt if is_alt_chamber else ""
+                    display_alt_change = alt_change if is_alt_chamber else ""
+
                     all_rows.append({
                         "Chamber": chamber,
                         "Type": CHAMBER_TYPES.get(chamber, "Unknown"),
                         "Temperature": temp,
-                        "Humidity": hum,
-                        "Altitude": alt,
-                        "Altitude_Change": alt_change,
+                        "Humidity": hum if is_hum_chamber else "",
+                        "Altitude": display_alt,
+                        "Altitude_Change": display_alt_change,
                         "Power": CHAMBER_POWER.get(chamber, "2 KW"),
                         "Status": status,
                         "Size": size,
@@ -585,7 +594,7 @@ def run_streamlit_ui():
         st.error(f"Error: Could not find {file_path}. Please run the processing first.")
         return
 
-    df = pd.read_csv(file_path, dtype={"Altitude": "int64", "Altitude_Change": "str"})
+    df = pd.read_csv(file_path, dtype={"Altitude": "str", "Altitude_Change": "str"})
     df['Status'] = df['Status'].str.strip().str.upper()
     df['Temperature'] = pd.to_numeric(df['Temperature'], errors='coerce')
     df['Humidity'] = pd.to_numeric(df['Humidity'], errors='coerce')
