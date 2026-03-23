@@ -118,6 +118,41 @@ CHAMBER_POWER = {
     "Chamber 23": "9 KW"
 }
 
+CHAMBER_SIZES = {
+    "Chamber 2": "24x24x24",
+    "Chamber 4": "18x18x22",
+    "Chamber 6": "48x48x48",
+    "Chamber 7": "19x19x16",
+    "Chamber 8": "30x30x30",
+    "Chamber 9": "39x39x39",
+    "Chamber 10": "19x19x16",
+    "Chamber 12": "36x36x36",
+    "Chamber 13": "48x48x54",
+    "Chamber 14": "30x30x30",
+    "Chamber 15": "40x43x40",
+    "Chamber 17": "36x36x36",
+    "Chamber 18": "96x144x96",
+    "Chamber 19": "36x36x36",
+    "Chamber 21": "64x60x60",
+    "Chamber 22": "38x38x38",
+    "Chamber 23": "48x48x48",
+    "Chamber 31": "28x24x26",
+    "Chamber 33": "54x54x48",
+    "Chamber 34": "28x26x34",
+    "Chamber 37": "30x30x30",
+    "Chamber 38": "24x24x24",
+    "Chamber 40": "24x24x21",
+    "Chamber 42": "15x15x15",
+    "Chamber 43": "84x86x95",
+    "Chamber 44": "48x48x49",
+    "Chamber 45": "38x38x38",
+    "Chamber 46": "39x39x39",
+    "Chamber 51": "25x30x18",
+    "Chamber 56": "13.5x9x9.5",
+    "Chamber 57": "13.5x9x9.5",
+    "Chamber 60": "47x47x47"
+}
+
 HSV_THRESHOLDS = {
     "DOABLE": ([35, 50, 50], [85, 255, 255]),      # Green
     "VERIFY": ([15, 50, 50], [35, 255, 255]),      # Yellow
@@ -404,7 +439,8 @@ def main():
         
         chamber_data = ramp_mapping.get(match_chamber, {"rates": {}, "size": "Unknown"}) if match_chamber else {"rates": {}, "size": "Unknown"}
         chamber_rates = chamber_data.get("rates", {})
-        size = chamber_data.get("size", "Unknown")
+        # Prioritize hardcoded size if available
+        size = CHAMBER_SIZES.get(chamber, chamber_data.get("size", "Unknown"))
         gap = calculate_gap(size)
 
         # Define Altitude Points for Temp/Alt
@@ -540,7 +576,7 @@ def run_streamlit_ui():
 
     st.set_page_config(page_title="Multi-Point Chamber capability Checker", layout="wide")
     
-    st.title("🔎 Multi-Point Chamber capability Checker")
+    st.title("🔎 QL Chamber Checker")
     st.markdown("Search for chambers that satisfy multiple environmental configurations simultaneously.")
 
     # Load data
@@ -625,10 +661,12 @@ def run_streamlit_ui():
             with c1:
                 st.session_state.configs[i]['filter_temp'] = st.checkbox(f"Filter Temp (Set {i+1})", value=config['filter_temp'], key=f"f_t_{i}")
                 if st.session_state.configs[i]['filter_temp']:
-                    st.session_state.configs[i]['temp'] = st.select_slider(
+                    st.session_state.configs[i]['temp'] = st.number_input(
                         f"Temp (°C) - {i+1}", 
-                        options=temps_list, 
-                        value=config['temp'],
+                        min_value=int(min(temps_list)), 
+                        max_value=int(max(temps_list)), 
+                        value=int(config['temp']),
+                        step=1,
                         key=f"t_{i}"
                     )
             
@@ -641,11 +679,12 @@ def run_streamlit_ui():
                     if hum_relevant:
                         st.session_state.configs[i]['filter_hum'] = st.checkbox(f"Filter Hum (Set {i+1})", value=config['filter_hum'], key=f"f_h_{i}")
                         if st.session_state.configs[i]['filter_hum']:
-                            st.session_state.configs[i]['hum'] = st.slider(
+                            st.session_state.configs[i]['hum'] = st.number_input(
                                 f"Hum (%) - {i+1}", 
                                 min_value=int(min(hums_list)), 
                                 max_value=int(max(hums_list)), 
-                                value=config['hum'],
+                                value=int(config['hum']),
+                                step=1,
                                 key=f"h_{i}"
                             )
                     else:
