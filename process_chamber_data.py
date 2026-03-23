@@ -54,15 +54,15 @@ CHAMBER_TYPES = {
     "Chamber 37": "Temp",
     "Chamber 38": "Temp/Hum",
     "Chamber 40": "Temp",
-    "Chamber 42": "T-Shock",
+    "Chamber 42": "T-Shock (Soak)",
     "Chamber 43": "Temp/Hum",
     "Chamber 44": "Temp/Hum",
     "Chamber 45": "Temp/Hum",
     "Chamber 46": "Dust",
     "Chamber 50": "Heat Only",
-    "Chamber 51": "T-Shock",
-    "Chamber 56": "T-Shock",
-    "Chamber 57": "T-Shock",
+    "Chamber 51": "T-Shock (Soak)",
+    "Chamber 56": "T-Shock (Soak)",
+    "Chamber 57": "T-Shock (Soak)",
     "Chamber 60": "Temp",
     "QUV": "UV"
 }
@@ -161,8 +161,8 @@ HSV_THRESHOLDS = {
 }
 
 def format_ramp_rate(val):
-    if pd.isna(val) or val == "N/A":
-        return "N/A"
+    if pd.isna(val) or val == "N/A" or val == "":
+        return ""
     
     val_str = str(val).strip()
     
@@ -171,13 +171,13 @@ def format_ramp_rate(val):
         nums = re.findall(r'-?\d+\.?\d*', val_str)
         if nums:
             return f"{nums[0]}Ft/Min"
-        return "N/A"
+        return ""
 
     # Extract all numbers from the string
     nums = re.findall(r'\d+\.?\d*', val_str)
     
     if not nums:
-        return "N/A"
+        return ""
     
     # Check if the rate contains a range (e.g., "5.0-6.0")
     if '-' in val_str and len(nums) == 2:
@@ -193,7 +193,7 @@ def format_ramp_rate(val):
         num = float(nums[0])
         return f"{num:.1f}C/Min"
     except ValueError:
-        return "N/A"
+        return ""
 
 def calculate_gap(size_str):
     """
@@ -426,7 +426,7 @@ def main():
         else:
             standardized_ramp[r_ch] = r_ch
             
-    ALLOWED_TYPES = {"Temp", "Temp/Alt", "Temp/Hum", "T-Shock"}
+    ALLOWED_TYPES = {"Temp", "Temp/Alt", "Temp/Hum", "T-Shock (Soak)"}
     all_chambers_raw = hum_chambers.union(set(standardized_ramp.keys())).union(set(CHAMBER_TYPES.keys()))
     
     # Only include chambers that map to the ALLOWED_TYPES
@@ -573,6 +573,9 @@ def main():
     final_df = pd.DataFrame(all_rows)
     # Ensure reproducibility by sorting
     final_df = final_df.sort_values(by=["Chamber", "Altitude", "Temperature", "Humidity"])
+    
+    # Globally replace any N/A strings with empty strings
+    final_df = final_df.replace("N/A", "")
     
     output_file = "chamber_complete_data.csv"
     final_df.to_csv(output_file, index=False)
