@@ -426,7 +426,11 @@ def main():
         else:
             standardized_ramp[r_ch] = r_ch
             
-    unique_chambers = sorted(list(hum_chambers.union(set(standardized_ramp.keys()))))
+    ALLOWED_TYPES = {"Temp", "Temp/Alt", "Temp/Hum", "T-Shock"}
+    all_chambers_raw = hum_chambers.union(set(standardized_ramp.keys())).union(set(CHAMBER_TYPES.keys()))
+    
+    # Only include chambers that map to the ALLOWED_TYPES
+    unique_chambers = sorted([c for c in all_chambers_raw if CHAMBER_TYPES.get(c) in ALLOWED_TYPES])
     
     for chamber in unique_chambers:
         match_chamber = standardized_ramp.get(chamber)
