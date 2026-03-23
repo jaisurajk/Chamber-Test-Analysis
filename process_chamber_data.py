@@ -54,15 +54,15 @@ CHAMBER_TYPES = {
     "Chamber 37": "Temp",
     "Chamber 38": "Temp/Hum",
     "Chamber 40": "Temp",
-    "Chamber 42": "T-Shock (Soak)",
+    "Chamber 42": "T-Shock",
     "Chamber 43": "Temp/Hum",
     "Chamber 44": "Temp/Hum",
     "Chamber 45": "Temp/Hum",
     "Chamber 46": "Dust",
     "Chamber 50": "Heat Only",
     "Chamber 51": "T-Shock (Soak)",
-    "Chamber 56": "T-Shock (Soak)",
-    "Chamber 57": "T-Shock (Soak)",
+    "Chamber 56": "T-Shock",
+    "Chamber 57": "T-Shock",
     "Chamber 60": "Temp",
     "QUV": "UV"
 }
@@ -200,12 +200,13 @@ def calculate_gap(size_str):
     Calculates the required gap for each dimension axis.
     Formula: ceil(3 + (Dim - 18) * 2 / 31)
     Maps dimension range [18, 49] to gap range [3, 5], clamped at [3, 5].
+    Minimum gap is strictly 3x3x3.
     """
-    if not size_str or size_str == "Unknown":
-        return "Unknown"
+    if not size_str or size_str == "Unknown" or size_str == "Any":
+        return "3x3x3"
     
     try:
-        dims = [int(v) for v in size_str.split('x')]
+        dims = [float(v) for v in size_str.split('x')]
         gaps = []
         for d in dims:
             # Linear scaling from [18, 49] to [3, 5]
@@ -216,7 +217,7 @@ def calculate_gap(size_str):
             gaps.append(str(res))
         return "x".join(gaps)
     except:
-        return "Unknown"
+        return "3x3x3"
 
 def load_ramp_mapping(csv_path="ramp_rates.csv"):
     """Loads ramp rates from CSV and returns a nested dictionary."""
@@ -426,7 +427,7 @@ def main():
         else:
             standardized_ramp[r_ch] = r_ch
             
-    ALLOWED_TYPES = {"Temp", "Temp/Alt", "Temp/Hum", "T-Shock (Soak)"}
+    ALLOWED_TYPES = {"Temp", "Temp/Alt", "Temp/Hum", "T-Shock", "T-Shock (Soak)"}
     all_chambers_raw = hum_chambers.union(set(standardized_ramp.keys())).union(set(CHAMBER_TYPES.keys()))
     
     # Only include chambers that map to the ALLOWED_TYPES
