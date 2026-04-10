@@ -195,6 +195,32 @@ def format_ramp_rate(val):
     except ValueError:
         return ""
 
+STANDARD_RAMP_OPTIONS = [1.0, 2.0, 3.0, 4.0, 5.0, 10.0, 15.0, 20.0]
+
+def format_requested_ramp(rate):
+    return f"{float(rate):.1f}C/Min"
+
+def extract_ramp_floor(rate_value):
+    """
+    Converts a ramp string like '2.0C/Min' or '5.0-6.0C/Min' into the minimum
+    supported numeric rate so requested ramps can be treated as 'this fast or faster'.
+    """
+    if pd.isna(rate_value):
+        return np.nan
+
+    rate_str = str(rate_value).strip()
+    if not rate_str or "FT/MIN" in rate_str.upper():
+        return np.nan
+
+    nums = re.findall(r'-?\d+\.?\d*', rate_str)
+    if not nums:
+        return np.nan
+
+    try:
+        return min(float(num) for num in nums)
+    except ValueError:
+        return np.nan
+
 def calculate_gap(size_str):
     """
     Calculates the required gap for each dimension axis.
@@ -613,7 +639,7 @@ def run_streamlit_ui():
             'type': 'Temp/Hum',
             'temp': 25, 
             'hum': 50, 
-            'ramp': '1.0C/Min', 
+            'ramp': format_requested_ramp(STANDARD_RAMP_OPTIONS[0]),
             'size': 'Any', 
             'filter_temp': True, 
             'filter_hum': True
@@ -626,7 +652,7 @@ def run_streamlit_ui():
             'type': 'Temp/Hum',
             'temp': 25, 
             'hum': 50, 
-            'ramp': '1.0C/Min', 
+            'ramp': format_requested_ramp(STANDARD_RAMP_OPTIONS[0]),
             'size': 'Any',
             'filter_temp': True, 
             'filter_hum': True
@@ -637,7 +663,7 @@ def run_streamlit_ui():
             'type': 'Temp/Hum',
             'temp': 25, 
             'hum': 50, 
-            'ramp': '1.0C/Min', 
+            'ramp': format_requested_ramp(STANDARD_RAMP_OPTIONS[0]),
             'size': 'Any', 
             'filter_temp': True, 
             'filter_hum': True
@@ -649,9 +675,12 @@ def run_streamlit_ui():
     
     temps_list = sorted(df['Temperature'].dropna().unique())
     hums_list = sorted(df['Humidity'].dropna().unique())
-    ramps_list = sorted(df['Ramp_Rate'].dropna().unique())
+    ramps_list = [format_requested_ramp(rate) for rate in STANDARD_RAMP_OPTIONS]
     sizes_list = ['Any'] + sorted(df['Size'].dropna().unique().tolist())
     types_list = sorted(df['Type'].dropna().unique().tolist())
+
+    df = df.copy()
+    df['Ramp_Rate_Floor'] = df['Ramp_Rate'].apply(extract_ramp_floor)
 
     if not temps_list or not hums_list:
         st.error("Error: No valid Temperature or Humidity data found in the dataset. Please check the processing logic.")
@@ -745,8 +774,9 @@ def run_streamlit_ui():
         # Base filter by Type
         step_df = df[df['Type'] == config['type']]
         
-        # Filter by Ramp
-        step_df = step_df[step_df['Ramp_Rate'] == config['ramp']]
+        requested_ramp = extract_ramp_floor(config['ramp'])
+        if not pd.isna(requested_ramp):
+            step_df = step_df[step_df['Ramp_Rate_Floor'] >= requested_ramp]
         
         # Apply Size filter
         if config['size'] != 'Any':
@@ -848,9 +878,14 @@ def run_streamlit_ui():
                 
                 # --- RECOMMENDATION LOGIC ---
                 # Filter by Ramp_Rate AND the requested chamber type
-                ramp_doable = df[(df['Ramp_Rate'] == res['ramp']) & (df['Status'] == 'DOABLE') & (df['Type'] == res['chamber_type'])].copy()
+                requested_ramp = extract_ramp_floor(res['ramp'])
+                ramp_doable = df[
+                    (df['Status'] == 'DOABLE') &
+                    (df['Type'] == res['chamber_type']) &
+                    (df['Ramp_Rate_Floor'] >= requested_ramp)
+                ].copy()
                 if not ramp_doable.empty:
-                    st.info("💡 Nearest 'DOABLE' options for this ramp rate:")
+                    st.info("💡 Nearest 'DOABLE' options that meet or exceed this ramp rate:")
                     
                     req_t = res['target_t'] if res['target_t'] is not None else 0
                     req_h = res['target_h'] if res['target_h'] is not None else 0
