@@ -245,6 +245,88 @@ def calculate_gap(size_str):
     except:
         return "3x3x3"
 
+def parse_size_dimensions(size_str):
+    """Convert a size string like '48x48x48' into numeric dimensions."""
+    if not size_str or str(size_str).strip() in {"Unknown", "Any", "nan"}:
+        return None
+
+    try:
+        dims = tuple(float(v) for v in str(size_str).split('x'))
+        return dims if len(dims) == 3 else None
+    except Exception:
+        return None
+
+def size_sort_key(size_str):
+    """
+    Sort sizes from smallest to largest using volume, then dimensions for ties.
+    Unknown sizes are pushed to the end.
+    """
+    dims = parse_size_dimensions(size_str)
+    if dims is None:
+        return (float("inf"), float("inf"), float("inf"), float("inf"))
+
+    volume = dims[0] * dims[1] * dims[2]
+    return (volume, dims[0], dims[1], dims[2])
+
+def size_meets_or_exceeds(candidate_size, minimum_size):
+    """Return True when candidate_size is equal to or larger than minimum_size."""
+    candidate_key = size_sort_key(candidate_size)
+    minimum_key = size_sort_key(minimum_size)
+    return candidate_key <= (float("inf"), float("inf"), float("inf"), float("inf")) and candidate_key >= minimum_key
+
+def get_matching_step_df(df, config):
+    """Apply shared requirement-step filtering before the size constraint."""
+    step_df = df[df['Type'] == config['type']].copy()
+
+    requested_ramp = extract_ramp_floor(config['ramp'])
+    if not pd.isna(requested_ramp):
+        step_df = step_df[step_df['Ramp_Rate_Floor'] >= requested_ramp]
+
+    actual_hum = config['hum']
+    is_hum_available = "Hum" in config['type']
+    is_hum_relevant = is_hum_available and (10 <= config['temp'] <= 90)
+
+    if config['filter_hum'] and is_hum_relevant:
+        avail = step_df[step_df['Temperature'] == config['temp']]['Humidity'].unique() if config['filter_temp'] else step_df['Humidity'].unique()
+        if len(avail) > 0:
+            actual_hum = min(avail, key=lambda x: abs(x - config['hum']))
+
+    query = step_df.copy()
+    if config['filter_temp']:
+        query = query[query['Temperature'] == config['temp']]
+    if config['filter_hum'] and is_hum_relevant:
+        query = query[query['Humidity'] == actual_hum]
+
+    return step_df, query, actual_hum, is_hum_relevant
+
+def get_allowed_sizes_for_config(df, config, all_sizes):
+    """
+    Restrict the size dropdown to the minimum DOABLE size for the current spec
+    and every larger chamber size.
+    """
+    _, query, _, _ = get_matching_step_df(df, config)
+    doable_sizes = query[query['Status'] == 'DOABLE']['Size'].dropna().unique().tolist()
+
+    valid_doable_sizes = [size for size in doable_sizes if parse_size_dimensions(size) is not None]
+    if not valid_doable_sizes:
+        return ['Any'] + all_sizes, None
+
+    minimum_size = min(valid_doable_sizes, key=size_sort_key)
+    available_sizes = [size for size in all_sizes if size_meets_or_exceeds(size, minimum_size)]
+    return ['Any'] + available_sizes, minimum_size
+
+def format_chamber_range(chamber_detail_df, chamber_type):
+    min_temp = chamber_detail_df['Temperature'].min()
+    max_temp = chamber_detail_df['Temperature'].max()
+    lines = [f"Temp: {min_temp:.0f}°C to {max_temp:.0f}°C"]
+
+    if "Hum" in chamber_type:
+        hum_series = chamber_detail_df['Humidity'].dropna()
+        if not hum_series.empty:
+            lines.append(f"Humidity: {hum_series.min():.0f}% to {hum_series.max():.0f}% RH")
+
+    return lines
+
 def load_ramp_mapping(csv_path="ramp_rates.csv"):
     """Loads ramp rates from CSV and returns a nested dictionary."""
     if not os.path.exists(csv_path):
@@ -645,11 +727,15 @@ def run_streamlit_ui():
             'filter_hum': True
         }]
 
+    shared_type = st.session_state.configs[0]['type']
+    for config in st.session_state.configs:
+        config['type'] = shared_type
+
     # Sidebar for control
     st.sidebar.header("Configuration Management")
     if st.sidebar.button("Add Requirement Step"):
         st.session_state.configs.append({
-            'type': 'Temp/Hum',
+            'type': st.session_state.configs[0]['type'],
             'temp': 25, 
             'hum': 50, 
             'ramp': format_requested_ramp(STANDARD_RAMP_OPTIONS[0]),
@@ -676,7 +762,7 @@ def run_streamlit_ui():
     temps_list = sorted(df['Temperature'].dropna().unique())
     hums_list = sorted(df['Humidity'].dropna().unique())
     ramps_list = [format_requested_ramp(rate) for rate in STANDARD_RAMP_OPTIONS]
-    sizes_list = ['Any'] + sorted(df['Size'].dropna().unique().tolist())
+    all_sizes = sorted(df['Size'].dropna().unique().tolist(), key=size_sort_key)
     types_list = sorted(df['Type'].dropna().unique().tolist())
 
     df = df.copy()
@@ -692,12 +778,20 @@ def run_streamlit_ui():
     for i, config in enumerate(st.session_state.configs):
         with st.expander(f"Requirement Set #{i+1}", expanded=True):
             # FIRST ROW: Type selection
+            type_help = "Shared across all requirement sets. Use Reset All to start over with a different type."
             st.session_state.configs[i]['type'] = st.selectbox(
                 f"Chamber Type - {i+1}",
                 options=types_list,
-                index=types_list.index(config['type']) if config['type'] in types_list else 0,
-                key=f"type_{i}"
+                index=types_list.index(st.session_state.configs[0]['type']) if st.session_state.configs[0]['type'] in types_list else 0,
+                key=f"type_{i}",
+                disabled=i > 0,
+                help=type_help
             )
+
+            if i == 0:
+                shared_type = st.session_state.configs[i]['type']
+                for synced_config in st.session_state.configs:
+                    synced_config['type'] = shared_type
             
             selected_type = st.session_state.configs[i]['type']
             is_hum_available = "Hum" in selected_type
@@ -749,14 +843,19 @@ def run_streamlit_ui():
                 )
 
             with c4:
+                allowed_sizes, minimum_size = get_allowed_sizes_for_config(df, st.session_state.configs[i], all_sizes)
+                if st.session_state.configs[i]['size'] not in allowed_sizes:
+                    st.session_state.configs[i]['size'] = 'Any'
                 st.session_state.configs[i]['size'] = st.selectbox(
                     f"Size - {i+1}", 
-                    options=sizes_list, 
-                    index=sizes_list.index(config['size']) if config['size'] in sizes_list else 0,
+                    options=allowed_sizes,
+                    index=allowed_sizes.index(st.session_state.configs[i]['size']) if st.session_state.configs[i]['size'] in allowed_sizes else 0,
                     key=f"s_{i}"
                 )
-                if config['size'] != 'Any':
-                    st.caption(f"🛡️ Req. Gap: {calculate_gap(config['size'])}")
+                if minimum_size:
+                    st.caption(f"Minimum required gap: {calculate_gap(minimum_size)}")
+                if st.session_state.configs[i]['size'] != 'Any':
+                    st.caption(f"🛡️ Req. Gap: {calculate_gap(st.session_state.configs[i]['size'])}")
             
             with c5:
                 st.write("") # Spacer
@@ -771,34 +870,12 @@ def run_streamlit_ui():
     results_per_step = []
 
     for i, config in enumerate(st.session_state.configs):
-        # Base filter by Type
-        step_df = df[df['Type'] == config['type']]
-        
-        requested_ramp = extract_ramp_floor(config['ramp'])
-        if not pd.isna(requested_ramp):
-            step_df = step_df[step_df['Ramp_Rate_Floor'] >= requested_ramp]
-        
+        step_df, query, actual_hum, is_hum_relevant = get_matching_step_df(df, config)
+
         # Apply Size filter
         if config['size'] != 'Any':
             step_df = step_df[step_df['Size'] == config['size']]
-
-        actual_hum = config['hum']
-        # Double check hum relevance here too
-        is_hum_available = "Hum" in config['type']
-        is_hum_relevant = is_hum_available and (10 <= config['temp'] <= 90)
-        
-        if config['filter_hum'] and is_hum_relevant:
-            # Find closest hum
-            avail = step_df[step_df['Temperature'] == config['temp']]['Humidity'].unique() if config['filter_temp'] else step_df['Humidity'].unique()
-            if len(avail) > 0:
-                actual_hum = min(avail, key=lambda x: abs(x - config['hum']))
-        
-        # Apply filters to find DOABLE chambers for this step
-        query = step_df.copy()
-        if config['filter_temp']:
-            query = query[query['Temperature'] == config['temp']]
-        if config['filter_hum'] and is_hum_relevant:
-            query = query[query['Humidity'] == actual_hum]
+            query = query[query['Size'] == config['size']]
         
         doable_for_step = set(query[query['Status'] == 'DOABLE']['Chamber'].unique())
         common_doable_chambers = common_doable_chambers.intersection(doable_for_step)
@@ -827,6 +904,12 @@ def run_streamlit_ui():
         for j, chamber in enumerate(sorted(list(common_doable_chambers))):
             with cols[j % 5]:
                 st.metric(label="Available Chamber", value=chamber)
+                chamber_detail_df = df[df['Chamber'] == chamber]
+                chamber_type = chamber_detail_df['Type'].iloc[0]
+                chamber_size = chamber_detail_df['Size'].iloc[0]
+                chamber_power = chamber_detail_df['Power'].iloc[0]
+                for detail_line in [f"Size: {chamber_size}", *format_chamber_range(chamber_detail_df, chamber_type), f"Power: {chamber_power}"]:
+                    st.caption(detail_line)
                 st.success("DOABLE for all sets")
     else:
         st.error("No single chamber satisfies all configurations simultaneously.")
