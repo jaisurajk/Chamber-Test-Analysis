@@ -903,11 +903,17 @@ def run_streamlit_ui():
         cols = st.columns(min(len(common_doable_chambers), 5))
         for j, chamber in enumerate(sorted(list(common_doable_chambers))):
             with cols[j % 5]:
-                st.metric(label="Available Chamber", value=chamber)
                 chamber_detail_df = df[df['Chamber'] == chamber]
                 chamber_type = chamber_detail_df['Type'].iloc[0]
                 chamber_size = chamber_detail_df['Size'].iloc[0]
                 chamber_power = chamber_detail_df['Power'].iloc[0]
+                chamber_port = ""
+                if 'Port' in chamber_detail_df.columns:
+                    chamber_port = str(chamber_detail_df['Port'].iloc[0]).strip()
+
+                st.metric(label="Available Chamber", value=chamber)
+                if chamber_port and chamber_port.lower() != "nan":
+                    st.caption(f"Port: {chamber_port}")
                 for detail_line in [f"Size: {chamber_size}", *format_chamber_range(chamber_detail_df, chamber_type), f"Power: {chamber_power}"]:
                     st.caption(detail_line)
                 st.success("DOABLE for all sets")
