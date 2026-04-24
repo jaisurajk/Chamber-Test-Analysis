@@ -277,6 +277,23 @@ def size_meets_or_exceeds(candidate_size, minimum_size):
 
     return all(candidate_dim >= minimum_dim for candidate_dim, minimum_dim in zip(candidate_dims, minimum_dims))
 
+def normalize_requested_temp(temp_value):
+    """
+    Round temperatures above 10C up to the next multiple of 5 so they align with
+    the dataset's Temp/Hum grid (e.g. 26C -> 30C).
+    """
+    if pd.isna(temp_value):
+        return temp_value
+
+    try:
+        temp_value = float(temp_value)
+    except (TypeError, ValueError):
+        return temp_value
+
+    if temp_value > 10 and temp_value % 5 != 0:
+        return int(math.ceil(temp_value / 5.0) * 5)
+    return int(temp_value) if float(temp_value).is_integer() else temp_value
+
 def get_matching_step_df(df, config):
     """Apply shared requirement-step filtering before the size constraint."""
     if config['type'] == 'Any':
@@ -288,22 +305,23 @@ def get_matching_step_df(df, config):
     if not pd.isna(requested_ramp):
         step_df = step_df[step_df['Ramp_Rate_Floor'] >= requested_ramp]
 
+    actual_temp = normalize_requested_temp(config['temp'])
     actual_hum = config['hum']
     is_hum_available = step_df['Humidity'].notna().any()
-    is_hum_relevant = is_hum_available and (10 <= config['temp'] <= 90)
+    is_hum_relevant = is_hum_available and (10 <= actual_temp <= 90)
 
     if config['filter_hum'] and is_hum_relevant:
-        avail = step_df[step_df['Temperature'] == config['temp']]['Humidity'].dropna().unique() if config['filter_temp'] else step_df['Humidity'].dropna().unique()
+        avail = step_df[step_df['Temperature'] == actual_temp]['Humidity'].dropna().unique() if config['filter_temp'] else step_df['Humidity'].dropna().unique()
         if len(avail) > 0:
             actual_hum = min(avail, key=lambda x: abs(x - config['hum']))
 
     query = step_df.copy()
     if config['filter_temp']:
-        query = query[query['Temperature'] == config['temp']]
+        query = query[query['Temperature'] == actual_temp]
     if config['filter_hum'] and is_hum_relevant:
         query = query[query['Humidity'] == actual_hum]
 
-    return step_df, query, actual_hum, is_hum_relevant
+    return step_df, query, actual_temp, actual_hum, is_hum_relevant
 
 def get_allowed_sizes_for_config(df, config, all_sizes):
     """
@@ -824,6 +842,9 @@ def run_streamlit_ui():
                         step=1,
                         key=f"t_{i}"
                     )
+                    rounded_temp = normalize_requested_temp(st.session_state.configs[i]['temp'])
+                    if rounded_temp != st.session_state.configs[i]['temp']:
+                        st.caption(f"Using {rounded_temp}°C for matching")
             
             with c2:
                 if is_hum_available:
@@ -870,7 +891,7 @@ def run_streamlit_ui():
     results_per_step = []
 
     for i, config in enumerate(st.session_state.configs):
-        step_df, query, actual_hum, is_hum_relevant = get_matching_step_df(df, config)
+        step_df, query, actual_temp, actual_hum, is_hum_relevant = get_matching_step_df(df, config)
 
         # Apply Size filter
         if config['size'] != 'Any':
@@ -886,7 +907,7 @@ def run_streamlit_ui():
         if config['ramp'] != 'Any':
             filter_parts.append(config['ramp'])
         if config['filter_temp']:
-            filter_parts.append(f"{config['temp']}°C")
+            filter_parts.append(f"{actual_temp}°C")
         if config['filter_hum'] and is_hum_relevant:
             filter_parts.append(f"{actual_hum}% RH")
         if config['size'] != 'Any':
@@ -898,7 +919,7 @@ def run_streamlit_ui():
             'doable_chambers': doable_for_step,
             'chamber_type': config['type'],
             'minimum_size': config['size'],
-            'target_t': config['temp'] if config['filter_temp'] else None,
+            'target_t': actual_temp if config['filter_temp'] else None,
             'target_h': actual_hum if (config['filter_hum'] and is_hum_relevant) else None,
             'ramp': config['ramp'],
             'filter_desc': ", ".join(filter_parts) if filter_parts else "Any"
