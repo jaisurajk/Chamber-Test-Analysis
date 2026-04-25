@@ -19,9 +19,11 @@ IMG_HUM_COUNT = 29
 
 CHAMBER_LEGENDS = {
     "DEFAULT": [0, 1, 2, 3, 4, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 96, 97, 98, 99, 100],
-    "10": [0, 1, 2, 3, 4, 7, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 96, 97, 98, 99, 100],
-    "7": [0, 1, 2, 3, 4, 7, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 96, 97, 98, 99, 100],
-    "23": [0, 1, 2, 3, 4, 7, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 96, 97, 98, 99, 100],
+    # These chambers have 5C support in the source images; using 7C here
+    # shifts that capability to the wrong temperature in the final CSV.
+    "10": [0, 1, 2, 3, 4, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 96, 97, 98, 99, 100],
+    "7": [0, 1, 2, 3, 4, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 96, 97, 98, 99, 100],
+    "23": [0, 1, 2, 3, 4, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 96, 97, 98, 99, 100],
     "8": [0, 1, 2, 5, 6, 7, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 96, 97, 98, 99, 100],
     "44": [1, 2, 3, 4, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 96, 97, 98, 99, 100],
     "45": [0, 1, 5, 7, 8, 9, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 96, 97, 98, 99, 100]
@@ -60,7 +62,7 @@ CHAMBER_TYPES = {
     "Chamber 45": "Temp/Hum",
     "Chamber 46": "Dust",
     "Chamber 50": "Heat Only",
-    "Chamber 51": "T-Shock (Soak)",
+    "Chamber 51": "T-Shock",
     "Chamber 56": "T-Shock",
     "Chamber 57": "T-Shock",
     "Chamber 60": "Temp",
@@ -329,6 +331,36 @@ def get_allowed_sizes_for_config(df, config, all_sizes):
     """
     return ['Any'] + all_sizes, None
 
+def get_temperature_guidance(df, chamber_type, requested_temp):
+    """
+    Return advisory copy for humidity-capable chamber requests that fall outside
+    the supported temperature range.
+    """
+    if requested_temp is None:
+        return None
+
+    if chamber_type == 'Any':
+        relevant_df = df[df['Humidity'].notna()]
+    else:
+        relevant_df = df[(df['Type'] == chamber_type) & df['Humidity'].notna()]
+
+    if relevant_df.empty:
+        return None
+
+    min_temp = relevant_df['Temperature'].min()
+    max_temp = relevant_df['Temperature'].max()
+
+    if requested_temp > max_temp or requested_temp > 100:
+        return (
+            f"Humidity cannot be controlled over {int(requested_temp)}C as the water "
+            "would keep boiling and create too much humidity. Contact Project Engineers"
+        )
+
+    if requested_temp < min_temp or requested_temp < -60:
+        return "Contact Test Engineers"
+
+    return None
+
 def format_chamber_range(chamber_detail_df, chamber_type):
     min_temp = chamber_detail_df['Temperature'].min()
     max_temp = chamber_detail_df['Temperature'].max()
@@ -516,9 +548,16 @@ def main():
     all_hum_results = []
     hum_folder = 'chamber_data_folder'
     if os.path.exists(hum_folder):
-        hum_images = [os.path.join(hum_folder, f) for f in os.listdir(hum_folder) if f.endswith('.png')]
+        hum_images = [
+            os.path.join(hum_folder, f)
+            for f in os.listdir(hum_folder)
+            if re.fullmatch(r'chamber\d+\.png', f, re.IGNORECASE)
+        ]
     else:
-        hum_images = [f for f in os.listdir('.') if f.endswith('.png') and 'RAMP' not in f and 'debug' not in f]
+        hum_images = [
+            f for f in os.listdir('.')
+            if re.fullmatch(r'chamber\d+\.png', f, re.IGNORECASE)
+        ]
     
     for img_path in hum_images:
         print(f"Processing Humidity: {img_path}...")
@@ -531,6 +570,14 @@ def main():
         return
 
     hum_df = pd.DataFrame(all_hum_results)
+    hum_status_lookup = {
+        (row["Chamber"], row["Temperature"], row["Humidity"]): row["Status"]
+        for _, row in hum_df.iterrows()
+    }
+    hum_temps_by_chamber = {
+        chamber: set(group["Temperature"].tolist())
+        for chamber, group in hum_df.groupby("Chamber")
+    }
 
     # 2. Add RAMP Data
     print("Merging RAMP data...")
@@ -549,7 +596,7 @@ def main():
         else:
             standardized_ramp[r_ch] = r_ch
             
-    ALLOWED_TYPES = {"Temp", "Temp/Alt", "Temp/Hum", "T-Shock", "T-Shock (Soak)"}
+    ALLOWED_TYPES = {"Temp", "Temp/Alt", "Temp/Hum", "T-Shock"}
     all_chambers_raw = hum_chambers.union(set(standardized_ramp.keys())).union(set(CHAMBER_TYPES.keys()))
     
     # Only include chambers that map to the ALLOWED_TYPES
@@ -636,7 +683,8 @@ def main():
 
                 # Check if Temp within Chamber's Range
                 ch_range = CHAMBER_RANGES.get(chamber)
-                if ch_range and not (ch_range[0] <= temp <= ch_range[1]):
+                has_image_temp = temp in hum_temps_by_chamber.get(chamber, set())
+                if ch_range and not (ch_range[0] <= temp <= ch_range[1]) and not has_image_temp:
                     continue
 
                 # Select humidity labels based on chamber type
@@ -646,32 +694,23 @@ def main():
                 for hum in current_hum_labels:
                     # Within range - determine status
                     status = "NOT DOABLE" # Default
-                    
-                    if temp < 10 or temp > 90:
-                        if chamber == "Chamber 10" and temp == 4:
+
+                    if is_hum_chamber and has_image_temp:
+                        # Preserve the source image exactly for temperatures that appear
+                        # in the chamber capability chart, including humidity-specific
+                        # DOABLE/VERIFY bands at low and high temperatures.
+                        status = hum_status_lookup.get((chamber, temp, hum), "NOT DOABLE")
+                    elif temp < 10 or temp > 90:
+                        # Outside the charted humidity-temperature grid, treat an in-range
+                        # temperature as generically doable when no image-backed point exists.
+                        status = "DOABLE"
+                    else:
+                        # Temp/Hum chambers without source data for this point remain unsupported.
+                        ch_type = CHAMBER_TYPES.get(chamber, "")
+                        if "Hum" not in ch_type:
                             status = "DOABLE"
                         else:
-                            status_data = hum_df[(hum_df["Chamber"] == chamber) & (hum_df["Temperature"] == temp)]
-                            if not status_data.empty:
-                                status = status_data["Status"].mode()[0]
-                            else:
-                                # For out-of-humidity-range temps, if it's within CHAMBER_RANGES, it's generally DOABLE
-                                status = "DOABLE"
-                    else:
-                        # Normal operating range [10, 90]
-                        status_row = hum_df[(hum_df["Chamber"] == chamber) & (hum_df["Temperature"] == temp) & (hum_df["Humidity"] == hum)]
-                        
-                        if not status_row.empty:
-                            status = status_row.iloc[0]["Status"]
-                        else:
-                            # CRITICAL: If no image data, check chamber type
-                            ch_type = CHAMBER_TYPES.get(chamber, "")
-                            if "Hum" not in ch_type:
-                                # Temp-only or Temp/Alt chambers are DOABLE across all humidity labels (as placeholders)
-                                status = "DOABLE"
-                            else:
-                                # Temp/Hum chambers WITHOUT image data for this point are NOT DOABLE
-                                status = "NOT DOABLE"
+                            status = "NOT DOABLE"
 
                     # Clean up altitude for non-Temp/Alt chambers
                     is_alt_chamber = CHAMBER_TYPES.get(chamber) == "Temp/Alt"
@@ -735,7 +774,7 @@ def run_streamlit_ui():
             'type': 'Temp/Hum',
             'temp': 25, 
             'hum': 50, 
-            'ramp': format_requested_ramp(STANDARD_RAMP_OPTIONS[0]),
+            'ramp': 'Any',
             'size': 'Any', 
             'filter_temp': True, 
             'filter_hum': True
@@ -754,7 +793,7 @@ def run_streamlit_ui():
             'type': st.session_state.configs[0]['type'],
             'temp': 25, 
             'hum': 50, 
-            'ramp': format_requested_ramp(STANDARD_RAMP_OPTIONS[0]),
+            'ramp': 'Any',
             'size': st.session_state.configs[0]['size'],
             'filter_temp': True, 
             'filter_hum': True
@@ -765,7 +804,7 @@ def run_streamlit_ui():
             'type': 'Temp/Hum',
             'temp': 25, 
             'hum': 50, 
-            'ramp': format_requested_ramp(STANDARD_RAMP_OPTIONS[0]),
+            'ramp': 'Any',
             'size': 'Any', 
             'filter_temp': True, 
             'filter_hum': True
@@ -820,6 +859,8 @@ def run_streamlit_ui():
         config['size'] = shared_size
 
     st.subheader("📋 Environmental Requirements")
+    guidance_container = st.container()
+    temp_guidance_messages = []
 
     for i, config in enumerate(st.session_state.configs):
         with st.expander(f"Requirement Set #{i+1}", expanded=True):
@@ -845,6 +886,13 @@ def run_streamlit_ui():
                     rounded_temp = normalize_requested_temp(st.session_state.configs[i]['temp'])
                     if rounded_temp != st.session_state.configs[i]['temp']:
                         st.caption(f"Using {rounded_temp}°C for matching")
+                    guidance = get_temperature_guidance(
+                        df,
+                        selected_type,
+                        st.session_state.configs[i]['temp']
+                    )
+                    if guidance:
+                        temp_guidance_messages.append((i + 1, guidance))
             
             with c2:
                 if is_hum_available:
@@ -885,6 +933,10 @@ def run_streamlit_ui():
                     if st.button(f"🗑️ Remove", key=f"del_{i}"):
                         st.session_state.configs.pop(i)
                         st.rerun()
+
+    with guidance_container:
+        for step_id, message in temp_guidance_messages:
+            st.warning(f"Requirement Set #{step_id}: {message}")
 
     # Logic: Calculate intersections
     common_doable_chambers = set(df['Chamber'].unique())
